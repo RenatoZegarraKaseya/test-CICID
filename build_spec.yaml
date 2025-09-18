@@ -47,15 +47,16 @@ steps:
       fi
       echo ">> IAR final: $IAR_FILE"
 
-      echo "== Importing IAR =="
+      echo "== Importing IAR (POST) =="
       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
-        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?overwrite=true&forceImport=true" \
+        -X POST "$OIC_HOST_CLEAN/ic/api/integration/v1/integrations/archive?integrationInstance=${OIC_INSTANCE_ID}&forceImport=true" \
         -H "Accept: application/json" \
         -F "file=@${IAR_FILE}"
       echo "✔ Import completado"
 
       echo "== Activate Integration =="
       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
-        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate" \
+        -X POST "$OIC_HOST_CLEAN/ic/api/integration/v1/integrations/${INT_ID}/actions/activate?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json"
       echo "✅ Activación OK: ${INT_CODE} ${INT_VERSION}"
+
