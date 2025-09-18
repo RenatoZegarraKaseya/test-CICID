@@ -52,7 +52,6 @@ steps:
         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json" \
         -F "file=@${IAR_FILE}"
-        -F type=application/octet-stream
       echo "✔ Import completado"
 
       echo "== Activate Integration =="
@@ -60,4 +59,3 @@ steps:
         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json"
       echo "✅ Activación OK: ${INT_CODE} ${INT_VERSION}"
-
