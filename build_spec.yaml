@@ -1,49 +1,61 @@
 version: 0.1
 component: build
 shell: bash
-env:
- variables:
-   OIC_HOST: ${OIC_HOST}
-   OIC_USER: ${OIC_USER}
-   OIC_PASS: ${OIC_PASS}
-   INT_CODE: ${INT_CODE}
-   INT_VERSION: ${INT_VERSION}
-   AUTH_MODE: ${AUTH_MODE}   # "basic" (default) o "oauth"
+
 steps:
- - type: Command
-   name: "Import & Activate OIC Integration"
-   timeoutInSeconds: 1800
-   command: |
-     set -euo pipefail
-     # Defaults/validaciones
-     : "${AUTH_MODE:=basic}"
-     : "${INT_CODE:?Missing INT_CODE}"
-     : "${INT_VERSION:?Missing INT_VERSION}"
-     : "${OIC_HOST:?Missing OIC_HOST}"
-     INT_ID="${INT_CODE}%7C${INT_VERSION}"
-     IAR_FILE="./build/${INT_CODE}_${INT_VERSION}.iar"
-     echo "Target OIC: ${OIC_HOST}"
-     echo "IAR: ${IAR_FILE}"
-     if [ ! -f "$IAR_FILE" ]; then
-       echo "IAR artifact not found in: $IAR_FILE"
-       exit 1
-     fi
-     echo "== Importing IAR =="
-     if [ "$AUTH_MODE" = "basic" ]; then
-       : "${OIC_USER:?Missing OIC_USER}"; : "${OIC_PASS:?Missing OIC_PASS}"
-       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
-         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?overwrite=true&forceImport=true" \
-         -H "Accept: application/json" \
-         -F "file=@${IAR_FILE}"
-     else
-       echo "AUTH_MODE 'oauth' no implementado en este spec (agregar luego)."
-       exit 2
-     fi
-     echo "Import completed"
-     echo "== Activate Integration =="
-     if [ "$AUTH_MODE" = "basic" ]; then
-       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
-         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate" \
-         -H "Accept: application/json"
-     fi
-     echo "Activation OK: ${INT_CODE} ${INT_VERSION}"
+  - type: Command
+    name: "Import & Activate OIC Integration"
+    timeoutInSeconds: 1800
+    command: |
+      set -euo pipefail
+
+      # Lee directamente los Parameters del pipeline
+      : "${OIC_HOST:?Falta OIC_HOST (Parameter)}"
+      : "${OIC_USER:?Falta OIC_USER (Parameter)}"
+      : "${OIC_PASS:?Falta OIC_PASS (Parameter)}"
+      : "${INT_CODE:?Falta INT_CODE (Parameter)}"
+      : "${INT_VERSION:?Falta INT_VERSION (Parameter)}"
+
+      AUTH_MODE="${AUTH_MODE:-basic}"
+
+      echo ">> OIC_HOST=$OIC_HOST"
+      echo ">> INT_CODE=$INT_CODE"
+      echo ">> INT_VERSION=$INT_VERSION"
+
+      INT_ID="${INT_CODE}%7C${INT_VERSION}"
+
+      # Ruta esperada en RAÍZ (tu caso)
+      IAR_FILE="./${INT_CODE}_${INT_VERSION}.iar"
+
+      echo ">> Listando raíz del repo:"
+      ls -la || true
+      echo ">> Listando carpeta build/ (si existe):"
+      ls -la build || true
+
+      # Si no está en raíz con el nombre esperado, intenta autodetectar
+      if [ ! -f "$IAR_FILE" ]; then
+        if [ -f "./$(ls -1 *.iar 2>/dev/null | head -n1)" ]; then
+          IAR_FILE="$(ls -1 *.iar | head -n1)"
+          echo ">> Usando IAR detectado en raíz: $IAR_FILE"
+        elif [ -f "build/$(ls -1 build/*.iar 2>/dev/null | head -n1)" ]; then
+          IAR_FILE="$(ls -1 build/*.iar | head -n1)"
+          echo ">> Usando IAR detectado en build/: $IAR_FILE"
+        else
+          echo "❌ No se encontró archivo .iar. Pon ${INT_CODE}_${INT_VERSION}.iar en raíz o en build/."
+          exit 1
+        fi
+      fi
+      echo ">> IAR final: $IAR_FILE"
+
+      echo "== Importing IAR =="
+      curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?overwrite=true&forceImport=true" \
+        -H "Accept: application/json" \
+        -F "file=@${IAR_FILE}"
+      echo "✔ Import completado"
+
+      echo "== Activate Integration =="
+      curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate" \
+        -H "Accept: application/json"
+      echo "✅ Activación OK: ${INT_CODE} ${INT_VERSION}"
