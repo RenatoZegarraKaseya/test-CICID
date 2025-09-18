@@ -1,0 +1,49 @@
+version: 0.1
+component: build
+shell: bash
+env:
+ variables:
+   OIC_HOST: ${OIC_HOST}
+   OIC_USER: ${OIC_USER}
+   OIC_PASS: ${OIC_PASS}
+   INT_CODE: ${INT_CODE}
+   INT_VERSION: ${INT_VERSION}
+   AUTH_MODE: ${AUTH_MODE}   # "basic" (default) o "oauth"
+steps:
+ - type: Command
+   name: "Import & Activate OIC Integration"
+   timeoutInSeconds: 1800
+   command: |
+     set -euo pipefail
+     # Defaults/validaciones
+     : "${AUTH_MODE:=basic}"
+     : "${INT_CODE:?Missing INT_CODE}"
+     : "${INT_VERSION:?Missing INT_VERSION}"
+     : "${OIC_HOST:?Missing OIC_HOST}"
+     INT_ID="${INT_CODE}%7C${INT_VERSION}"
+     IAR_FILE="./build/${INT_CODE}_${INT_VERSION}.iar"
+     echo "Target OIC: ${OIC_HOST}"
+     echo "IAR: ${IAR_FILE}"
+     if [ ! -f "$IAR_FILE" ]; then
+       echo "IAR artifact not found in: $IAR_FILE"
+       exit 1
+     fi
+     echo "== Importing IAR =="
+     if [ "$AUTH_MODE" = "basic" ]; then
+       : "${OIC_USER:?Missing OIC_USER}"; : "${OIC_PASS:?Missing OIC_PASS}"
+       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?overwrite=true&forceImport=true" \
+         -H "Accept: application/json" \
+         -F "file=@${IAR_FILE}"
+     else
+       echo "AUTH_MODE 'oauth' no implementado en este spec (agregar luego)."
+       exit 2
+     fi
+     echo "Import completed"
+     echo "== Activate Integration =="
+     if [ "$AUTH_MODE" = "basic" ]; then
+       curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate" \
+         -H "Accept: application/json"
+     fi
+     echo "Activation OK: ${INT_CODE} ${INT_VERSION}"
