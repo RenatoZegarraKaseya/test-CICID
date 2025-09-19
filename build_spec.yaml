@@ -4,19 +4,20 @@ shell: bash
 
 steps:
   - type: Command
-    name: "Import & Activate OIC Integration"
+    name: "Import & Activate OIC Integration (OAuth)"
     timeoutInSeconds: 1800
     command: |
       set -euo pipefail
 
       # Lee directamente los Parameters del pipeline
       : "${OIC_HOST:?Falta OIC_HOST (Parameter)}"
-      : "${OIC_USER:?Falta OIC_USER (Parameter)}"
-      : "${OIC_PASS:?Falta OIC_PASS (Parameter)}"
+      : "${OIC_INSTANCE_ID:?Falta OIC_INSTANCE_ID (Parameter)}"
       : "${INT_CODE:?Falta INT_CODE (Parameter)}"
       : "${INT_VERSION:?Falta INT_VERSION (Parameter)}"
-
-      AUTH_MODE="${AUTH_MODE:-basic}"
+      : "${OAUTH_TOKEN_URL:?Falta OAUTH_TOKEN_URL (Parameter)}"
+      : "${OAUTH_CLIENT_ID:?Falta OAUTH_CLIENT_ID (Parameter)}"
+      : "${OAUTH_CLIENT_SECRET:?Falta OAUTH_CLIENT_SECRET (Parameter)}"
+      : "${OAUTH_SCOPE:=}"   # puede ir vacío si no aplica
 
       echo ">> OIC_HOST=$OIC_HOST"
       echo ">> INT_CODE=$INT_CODE"
@@ -47,15 +48,26 @@ steps:
       fi
       echo ">> IAR final: $IAR_FILE"
 
-      echo "== Importing IAR (POST) =="
-      curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+      # ==== Obtener token OAuth ====
+      TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=$OAUTH_CLIENT_ID&client_secret=$OAUTH_CLIENT_SECRET&scope=$OAUTH_SCOPE" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+      if [ -z "$TOKEN" ]; then
+        echo "❌ No se pudo obtener access_token"
+        exit 1
+      fi
+
+      echo "== Importing IAR (POST con OAuth) =="
+      curl -f -s -S -H "Authorization: Bearer $TOKEN" \
         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/archive?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json" \
         -F "file=@${IAR_FILE}"
       echo "✔ Import completado"
 
       echo "== Activate Integration =="
-      curl -f -s -S -u "$OIC_USER:$OIC_PASS" \
+      curl -f -s -S -H "Authorization: Bearer $TOKEN" \
         -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json"
       echo "✅ Activación OK: ${INT_CODE} ${INT_VERSION}"
