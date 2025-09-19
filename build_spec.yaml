@@ -68,6 +68,9 @@ steps:
 
       echo "== Activate Integration =="
       curl -f -s -S -H "Authorization: Bearer $TOKEN" \
-        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}/actions/activate?integrationInstance=${OIC_INSTANCE_ID}" \
+        -H "X-HTTP-Method-Override: PATCH" \
+        -H "Content-Type: application/json" \
+        -d '{"status":"ACTIVATED"}' \
+        -X POST "$OIC_HOST/ic/api/integration/v1/integrations/${INT_ID}?integrationInstance=${OIC_INSTANCE_ID}" \
         -H "Accept: application/json"
       echo "✅ Activación OK: ${INT_CODE} ${INT_VERSION}"
