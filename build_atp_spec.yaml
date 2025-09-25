@@ -1,0 +1,36 @@
+- type: Command
+  name: "Deploy 1 DB object to ATP (SQLcl)"
+  timeoutInSeconds: 900
+  command: |
+    set -euo pipefail
+
+    : "${ATP_ALIAS:?Falta ATP_ALIAS}"      # ex: atp_high
+    : "${DB_USER:?Falta DB_USER}"          # ex: APP_USER
+    : "${DB_PASS:?Falta DB_PASS}"
+    : "${WALLET_DIR:?Falta WALLET_DIR}"    # ex: wallet
+    : "${DB_SCRIPT_PATH:?Falta DB_SCRIPT_PATH}"  # ex: PAAS/ATP/001_objeto_unico.sql
+
+    [ -f "$DB_SCRIPT_PATH" ] || { echo "$DB_SCRIPT_PATH not exists"; exit 1; }
+
+    # 1) Install SQLcl
+    curl -fLSso sqlcl.zip https://download.oracle.com/otn_software/java/sqldeveloper/sqlcl-latest.zip
+    unzip -q sqlcl.zip -d /opt/sqlcl
+    export PATH="/opt/sqlcl/sqlcl/bin:$PATH"
+
+    # 2) Prepare wallet and TNS_ADMIN
+    mkdir -p "$WALLET_DIR/wallet"
+    unzip -qo "$WALLET_DIR/Wallet_ATP.zip" -d "$WALLET_DIR/wallet"
+    export TNS_ADMIN="$WALLET_DIR/wallet"
+
+    # 3) validate connection
+    printf '%s\n' \
+      "connect ${DB_USER}/${DB_PASS}@${ATP_ALIAS}" \
+      "select 'PING' as ok from dual;" \
+      "exit" \
+    | sql /nolog
+
+    # 4) execute script
+    echo ">> executing $DB_SCRIPT_PATH"
+    sql "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
+
+    echo "✅ Deploy completed"
