@@ -1,82 +1,155 @@
-- type: Command
-  name: "Update single BIP object (auto-find by name)"
-  timeoutInSeconds: 600
-  command: |
-    set -euo pipefail
+version: 0.1
+component: build
+shell: bash
 
-    : "${BIP_HOST:?Missing BIP_HOST}"
-    : "${BIP_USER:?Missing BIP_USER}"
-    : "${BIP_PASS:?Missing BIP_PASS}"
-    : "${BIP_REPO_ROOT:?Missing BIP_REPO_ROOT}"   # ej: SAAS/BIP
-    : "${BIP_OBJ_NAME:?Missing BIP_OBJ_NAME}"     # ej: testingPipelineDM
-    : "${BIP_OBJ_PATH:?Missing BIP_OBJ_PATH}"     # ej: /Custom/KSY/DataModels/testingPipelineDM.xdm
+steps:
+  - type: Command
+    name: "Upsert single BIP object (download→update|upload)"
+    timeoutInSeconds: 900
+    command: |
+      set -euo pipefail
 
-    echo ">> Searching Object '${BIP_OBJ_NAME}' en ${BIP_REPO_ROOT} (.xdm/.xdmz/.xdo/.xdoz)"
-    mapfile -t CANDIDATES < <(find "$BIP_REPO_ROOT" -type f \( -iname "${BIP_OBJ_NAME}.xdm" -o -iname "${BIP_OBJ_NAME}.xdmz" -o -iname "${BIP_OBJ_NAME}.xdo" -o -iname "${BIP_OBJ_NAME}.xdoz" \) | sort)
+      : "${BIP_HOST:?Missing BIP_HOST}"                 # https://<pod>.fa.<region>.oraclecloud.com
+      : "${BIP_USER:?Missing BIP_USER}"
+      : "${BIP_PASS:?Missing BIP_PASS}"
+      : "${BIP_REPO_ROOT:?Missing BIP_REPO_ROOT}"       # ej: SAAS/BIP
+      : "${BIP_OBJ_NAME:?Missing BIP_OBJ_NAME}"         # ej: testingPipelineDM
+      : "${BIP_OBJ_PATH:?Missing BIP_OBJ_PATH}"         # ej: /Custom/KSY/DataModels/testingPipelineDM.xdm
 
-    if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-      echo "file not found for ${BIP_OBJ_NAME} in ${BIP_REPO_ROOT}"
-      exit 1
-    fi
+      echo ">> Searching '${BIP_OBJ_NAME}' in ${BIP_REPO_ROOT} (.xdm/.xdmz/.xdo/.xdoz)"
+      SRC="$(find "$BIP_REPO_ROOT" -type f \( -iname "${BIP_OBJ_NAME}.xdm" -o -iname "${BIP_OBJ_NAME}.xdmz" -o -iname "${BIP_OBJ_NAME}.xdo" -o -iname "${BIP_OBJ_NAME}.xdoz" \) | head -n1)"
+      [ -n "$SRC" ] || { echo "❌ Source not found"; exit 1; }
+      echo ">> Source: $SRC"
 
-    SRC="${CANDIDATES[0]}"
-    echo ">> file: $SRC"
+      # Infer type by extension for objectType (xdm|xdo) and target extension
+      lower="${SRC,,}"
+      if [[ "$lower" == *.xdm || "$lower" == *.xdmz ]]; then
+        TYPE="xdm"; DEST_EXT="xdm"
+      else
+        TYPE="xdo"; DEST_EXT="xdo"
+      fi
 
-    normalize_src() {
-      local src="$1"
-      local lower="${src,,}"
-      case "$lower" in
-        *.xdmz)
-          local tmpdir; tmpdir="$(mktemp -d)"
-          local zipf="$tmpdir/obj.zip"
-          cp "$src" "$zipf"
-          unzip -qo "$zipf" -d "$tmpdir"
-          local raw="$(find "$tmpdir" -maxdepth 1 -type f -iname "*.xdm" | head -n1)"
-          [ -n "$raw" ] || { echo ".xdm file not found in $src"; return 1; }
-          echo "$raw"
-          ;;
-        *.xdoz)
-          local tmpdir; tmpdir="$(mktemp -d)"
-          local zipf="$tmpdir/obj.zip"
-          cp "$src" "$zipf"
-          unzip -qo "$zipf" -d "$tmpdir"
-          local raw="$(find "$tmpdir" -maxdepth 1 -type f -iname "*.xdo" | head -n1)"
-          [ -n "$raw" ] || { echo ".xdo file not found in $src"; return 1; }
-          echo "$raw"
-          ;;
-        *)
-          echo "$src"
-          ;;
-      esac
-    }
+      # Prepare RAW_FILE (.xdm/.xdo) for updateObject
+      normalize_to_raw() {
+        local src="$1"
+        case "${src,,}" in
+          *.xdmz)
+            local tmpdir; tmpdir="$(mktemp -d)"
+            cp "$src" "$tmpdir/obj.zip"
+            unzip -qo "$tmpdir/obj.zip" -d "$tmpdir"
+            local raw; raw="$(find "$tmpdir" -maxdepth 1 -type f -iname '*.xdm' | head -n1)"
+            [ -n "$raw" ] || { echo "❌ .xdm not found inside xdmz"; return 1; }
+            echo "$raw"
+            ;;
+          *.xdoz)
+            local tmpdir; tmpdir="$(mktemp -d)"
+            cp "$src" "$tmpdir/obj.zip"
+            unzip -qo "$tmpdir/obj.zip" -d "$tmpdir"
+            local raw; raw="$(find "$tmpdir" -maxdepth 1 -type f -iname '*.xdo' | head -n1)"
+            [ -n "$raw" ] || { echo "❌ .xdo not found inside xdoz"; return 1; }
+            echo "$raw"
+            ;;
+          *)
+            echo "$src"
+            ;;
+        esac
+      }
 
-    RAW_FILE="$(normalize_src "$SRC")" || { echo "function failed"; exit 1; }
-    echo ">> raw file for update: $RAW_FILE"
+      RAW_FILE="$(normalize_to_raw "$SRC")" || { echo "❌ Normalization to RAW failed"; exit 1; }
+      echo ">> RAW for update: $RAW_FILE"
 
-    # Converting to base64 (.xdm o .xdo)
-    B64="$(base64 -w0 "$RAW_FILE" 2>/dev/null || base64 "$RAW_FILE" | tr -d '\n')"
+      # Prepare ZIP_B64 for uploadObject:
+      # - If source already zipped (.xdmz/.xdoz) → base64 of that file
+      # - Else zip the RAW_FILE and base64 that zip
+      prepare_zip_b64() {
+        local src="$1"
+        case "${src,,}" in
+          *.xdmz|*.xdoz)
+            base64 -w0 "$src" 2>/dev/null || base64 "$src" | tr -d '\n'
+            ;;
+          *)
+            local tmpzip; tmpzip="$(mktemp -u).zip"
+            ( cd "$(dirname "$RAW_FILE")" && zip -q "$tmpzip" "$(basename "$RAW_FILE")" )
+            base64 -w0 "$tmpzip" 2>/dev/null || base64 "$tmpzip" | tr -d '\n'
+            rm -f "$tmpzip" || true
+            ;;
+        esac
+      }
 
-    # build soap request
-    SOAP_FILE="$(mktemp)"
-    cat > "$SOAP_FILE" <<EOF
-    cat > "$SOAP_FILE" <<EOF
-    <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">
-      <soapenv:Body>
-        <v2:updateObject>
-          <v2:objectAbsolutePath>${BIP_OBJ_PATH}</v2:objectAbsolutePath>
-          <v2:objectData>${B64}</v2:objectData>
-          <v2:userID>${BIP_USER}</v2:userID>
-          <v2:password>${BIP_PASS}</v2:password>
-        </v2:updateObject>
-      </soapenv:Body>
-    </soapenv:Envelope>
-    EOF
+      RAW_B64="$(base64 -w0 "$RAW_FILE" 2>/dev/null || base64 "$RAW_FILE" | tr -d '\n')"
+      ZIP_B64="$(prepare_zip_b64 "$SRC")"
 
-    echo "== updating '${BIP_OBJ_PATH}' =="
-    curl -f -s -S -u "${BIP_USER}:${BIP_PASS}" \
-      -H "Content-Type: text/xml;charset=UTF-8" \
-      -H 'SOAPAction: ""' \
-      --data @"$SOAP_FILE" \
-      "$BIP_HOST/xmlpserver/services/v2/CatalogService" >/dev/null
+      # 1) Check existence via downloadObject
+      echo ">> Checking existence (downloadObject) at: ${BIP_OBJ_PATH}"
+      REQ_DL="$(mktemp)"
+      printf '%s\n' \
+        '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
+        '  <soapenv:Body>' \
+        '    <v2:downloadObject>' \
+        "      <v2:objectAbsolutePath>${BIP_OBJ_PATH}</v2:objectAbsolutePath>" \
+        "      <v2:userID>${BIP_USER}</v2:userID>" \
+        "      <v2:password>${BIP_PASS}</v2:password>" \
+        '    </v2:downloadObject>' \
+        '  </soapenv:Body>' \
+        '</soapenv:Envelope>' > "$REQ_DL"
 
-    echo "✔ Update OK: ${BIP_OBJ_PATH}"
+      RESP_DL="$(mktemp)"
+      HTTP_CODE=$(curl -s -S -u "${BIP_USER}:${BIP_PASS}" \
+        -H "Content-Type: text/xml;charset=UTF-8" -H 'SOAPAction: ""' \
+        --data @"$REQ_DL" "$BIP_HOST/xmlpserver/services/v2/CatalogService" \
+        -w "%{http_code}" -o "$RESP_DL" || true)
+
+      # Decide existence: 200 and no SOAP Fault → exists
+      if [[ "$HTTP_CODE" == "200" ]] && ! grep -q "<soapenv:Fault" "$RESP_DL"; then
+        EXISTS=1
+        echo ">> Object exists → will call updateObject"
+      else
+        EXISTS=0
+        echo ">> Object NOT found → will call uploadObject"
+      fi
+
+      # 2) updateObject or uploadObject
+      if [[ "$EXISTS" -eq 1 ]]; then
+        # updateObject with RAW_B64
+        REQ_UPD="$(mktemp)"
+        printf '%s\n' \
+          '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
+          '  <soapenv:Body>' \
+          '    <v2:updateObject>' \
+          "      <v2:objectAbsolutePath>${BIP_OBJ_PATH}</v2:objectAbsolutePath>" \
+          "      <v2:objectData>${RAW_B64}</v2:objectData>" \
+          "      <v2:userID>${BIP_USER}</v2:userID>" \
+          "      <v2:password>${BIP_PASS}</v2:password>" \
+          '    </v2:updateObject>' \
+          '  </soapenv:Body>' \
+          '</soapenv:Envelope>' > "$REQ_UPD"
+
+        curl -f -s -S -u "${BIP_USER}:${BIP_PASS}" \
+          -H "Content-Type: text/xml;charset=UTF-8" -H 'SOAPAction: ""' \
+          --data @"$REQ_UPD" "$BIP_HOST/xmlpserver/services/v2/CatalogService" >/dev/null
+
+        echo "✅ updateObject OK: ${BIP_OBJ_PATH}"
+      else
+        # uploadObject with ZIP_B64 and objectType
+        REQ_UPL="$(mktemp)"
+        printf '%s\n' \
+          '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
+          '  <soapenv:Body>' \
+          '    <v2:uploadObject>' \
+          "      <v2:reportObjectAbsolutePathURL>${BIP_OBJ_PATH}</v2:reportObjectAbsolutePathURL>" \
+          "      <v2:objectType>${TYPE}</v2:objectType>" \
+          "      <v2:objectZippedData>${ZIP_B64}</v2:objectZippedData>" \
+          "      <v2:userID>${BIP_USER}</v2:userID>" \
+          "      <v2:password>${BIP_PASS}</v2:password>" \
+          '    </v2:uploadObject>' \
+          '  </soapenv:Body>' \
+          '</soapenv:Envelope>' > "$REQ_UPL"
+
+        curl -f -s -S -u "${BIP_USER}:${BIP_PASS}" \
+          -H "Content-Type: text/xml;charset=UTF-8" -H 'SOAPAction: ""' \
+          --data @"$REQ_UPL" "$BIP_HOST/xmlpserver/services/v2/CatalogService" >/dev/null
+
+        echo "🆕 uploadObject OK: ${BIP_OBJ_PATH} (type=${TYPE})"
+      fi
+
+      echo "✅ Upsert completed"
