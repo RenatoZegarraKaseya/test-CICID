@@ -66,7 +66,7 @@ steps:
         '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
         '  <soapenv:Body>' \
         '    <v2:downloadObject>' \
-        "      <v2:objectAbsolutePath>${BIP_OBJ_PATH}</v2:objectAbsolutePath>" \
+        "      <v2:reportAbsolutePath>${BIP_OBJ_PATH}</v2:reportAbsolutePath>" \
         "      <v2:userID>${BIP_USER}</v2:userID>" \
         "      <v2:password>${BIP_PASS}</v2:password>" \
         '    </v2:downloadObject>' \
