@@ -22,15 +22,23 @@ steps:
       echo ">> OIC_INSTANCE_ID=$OIC_INSTANCE_ID"
       echo ">> PROJ_ID=$PROJ_ID"
 
-      # ===== Locate .car file under PAAS/OIC =====
-      CAR_FILE="PAAS/OIC/${PROJ_ID}.car"
-      ls -la PAAS/OIC || true
+      # ===== Locate .car file under PAAS/OIC/Integrations (with recursive fallback) =====
+      CAR_DIR="PAAS/OIC/Integrations"
+      echo ">> Listing ${CAR_DIR}:"
+      ls -la "${CAR_DIR}" || true
+
+      # First try exact match: <PROJ_ID>.car in PAAS/OIC/Integrations
+      CAR_FILE="${CAR_DIR}/${PROJ_ID}.car"
+
       if [ ! -f "$CAR_FILE" ]; then
-        CANDIDATE="$(ls -1 PAAS/OIC/*.car 2>/dev/null | head -n1 || true)"
-        [ -n "$CANDIDATE" ] || { echo "❌ No .car found in PAAS/OIC"; exit 1; }
-        CAR_FILE="$CANDIDATE"
-        echo ">> Using detected .car: $CAR_FILE"
+        echo ">> ${CAR_FILE} not found. Trying recursive search under PAAS/OIC…"
+        # Recursive fallback: first *.car found anywhere under PAAS/OIC
+        CAR_FILE="$(find PAAS/OIC -type f -iname '*.car' | head -n1 || true)"
       fi
+
+      [ -n "$CAR_FILE" ] && [ -f "$CAR_FILE" ] || { echo "❌ No .car found under PAAS/OIC (looked in ${CAR_DIR} and recursively)."; exit 1; }
+      echo ">> Using .car: $CAR_FILE"
+
 
       # ===== Get OAuth2 token (client_credentials) =====
       TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
