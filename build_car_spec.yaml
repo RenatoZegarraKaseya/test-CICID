@@ -1,0 +1,131 @@
+version: 0.1
+component: build
+shell: bash
+
+steps:
+  - type: Command
+    name: "Upsert OIC Project (.car) (OAuth) — safe heredoc"
+    timeoutInSeconds: 1800
+    command: |
+      set -euo pipefail
+
+      # ===== Parameters =====
+      : "${OIC_HOST:?Missing OIC_HOST}"                # https://design.integration.<region>.ocp.oraclecloud.com
+      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Instance short name (About > Service instance)
+      : "${PROJ_ID:?Missing PROJ_ID}"                  # Project identifier in OIC (e.g. TEST_PROJECT)
+      : "${OAUTH_TOKEN_URL:?Missing OAUTH_TOKEN_URL}"
+      : "${OAUTH_CLIENT_ID:?Missing OAUTH_CLIENT_ID}"
+      : "${OAUTH_CLIENT_SECRET:?Missing OAUTH_CLIENT_SECRET}"
+      : "${OAUTH_SCOPE:=}"                             # can be empty
+
+      echo ">> OIC_HOST=$OIC_HOST"
+      echo ">> OIC_INSTANCE_ID=$OIC_INSTANCE_ID"
+      echo ">> PROJ_ID=$PROJ_ID"
+
+      # ===== Locate .car file under PAAS/OIC =====
+      CAR_FILE="PAAS/OIC/${PROJ_ID}.car"
+      ls -la PAAS/OIC || true
+      if [ ! -f "$CAR_FILE" ]; then
+        CANDIDATE="$(ls -1 PAAS/OIC/*.car 2>/dev/null | head -n1 || true)"
+        [ -n "$CANDIDATE" ] || { echo "❌ No .car found in PAAS/OIC"; exit 1; }
+        CAR_FILE="$CANDIDATE"
+        echo ">> Using detected .car: $CAR_FILE"
+      fi
+
+      # ===== Get OAuth2 token (client_credentials) =====
+      TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=$OAUTH_CLIENT_ID&client_secret=$OAUTH_CLIENT_SECRET&scope=$OAUTH_SCOPE" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+      [ -n "$TOKEN" ] || { echo "❌ Could not obtain access_token"; exit 1; }
+
+      BASE="$OIC_HOST/ic/api/integration/v1"
+
+      # ===== Helpers: deactivate one integration by project endpoint =====
+      proj_deactivate() {
+        local proj="$1" ; local id="$2"
+        echo ">> Deactivating id=${id}"
+        curl -f -s -S \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "X-HTTP-Method-Override: PATCH" \
+          -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          -d '{"status":"DEACTIVATED"}' \
+          -X POST "$BASE/projects/${proj}/integrations/${id}?integrationInstance=${OIC_INSTANCE_ID}" >/dev/null
+        echo "✔ Deactivated ${id}"
+      }
+
+      # ===== List project integrations using official endpoint, parse via temp Python file =====
+      list_proj_integrations() {
+        local proj="$1" ; local outfile_json="$2"
+        curl -s -H "Authorization: Bearer $TOKEN" \
+          "$BASE/projects/${proj}/integrations?integrationInstance=${OIC_INSTANCE_ID}" > "$outfile_json"
+
+        PYFILE="$(mktemp)"
+cat > "$PYFILE" <<'PY'
+import sys, json
+p = json.load(open(sys.argv[1],'rb'))
+arr = []
+if isinstance(p, dict):
+    arr = p.get('items') or p.get('integrations') or []
+elif isinstance(p, list):
+    arr = p
+for v in arr:
+    if not isinstance(v, dict):
+        continue
+    iid = v.get('id')                      # expected: code%7Cversion
+    code = v.get('code') or v.get('name')  # fallback name
+    ver  = v.get('version') or v.get('integrationVersion')
+    st   = v.get('activation-status') or v.get('status')
+    if iid and code and ver:
+        print(f"{iid}|{code}|{ver}|{st or 'UNKNOWN'}")
+PY
+        python3 "$PYFILE" "$outfile_json"
+        rm -f "$PYFILE"
+      }
+
+      # ===== 1) Pre-deactivate active integrations =====
+      echo "== Pre-deactivate active integrations =="
+      TMP_JSON="$(mktemp)"
+      if list_proj_integrations "$PROJ_ID" "$TMP_JSON" >/tmp/integrs.list 2>/dev/null; then
+        while IFS='|' read -r ID CODE VER STATUS; do
+          [ -n "${ID:-}" ] || continue
+          ST_UP="$(echo "${STATUS:-}" | tr '[:lower:]' '[:upper:]')"
+          if echo "$ST_UP" | grep -Eq 'ACTIV'; then
+            proj_deactivate "$PROJ_ID" "$ID" || echo "⚠️ Could not deactivate ${ID} (${CODE}:${VER})"
+          else
+            echo ">> ${CODE}:${VER} is ${STATUS:-UNKNOWN}, no deactivation needed."
+          fi
+        done < /tmp/integrs.list
+      else
+        echo ">> Skipping pre-deactivate (could not list integrations)"
+      fi
+
+      # ===== 2) Delete project if exists =====
+      echo "== Checking if project exists =="
+      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer $TOKEN" \
+        "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}")
+      if [ "$HTTP_CODE" = "200" ]; then
+        echo ">> Project ${PROJ_ID} exists → deleting…"
+        curl -f -s -S -X DELETE \
+          -H "Authorization: BearER $TOKEN" \
+          "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}"
+        echo "✔ Deleted ${PROJ_ID}"
+      elif [ "$HTTP_CODE" = "404" ]; then
+        echo ">> Project ${PROJ_ID} not found → will import new"
+      else
+        echo "❌ GET /projects/${PROJ_ID} returned HTTP $HTTP_CODE"
+        exit 1
+      fi
+
+      # ===== 3) Import (Add) project .car =====
+      echo "== Importing Project (.car) =="
+      curl -f -s -S \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/json" \
+        -X POST "$BASE/projects/archive?integrationInstance=${OIC_INSTANCE_ID}" \
+        -F "file=@${CAR_FILE}"
+      echo "✔ Import OK: $CAR_FILE"
+
+      echo "✅ Project upsert completed"
