@@ -4,7 +4,7 @@ shell: bash
 
 steps:
   - type: Command
-    name: "Upsert OIC Project (.car) (OAuth) — safe heredoc"
+    name: "Upsert OIC Project (.car) (OAuth) — no heredocs"
     timeoutInSeconds: 1800
     command: |
       set -euo pipefail
@@ -41,7 +41,7 @@ steps:
 
       BASE="$OIC_HOST/ic/api/integration/v1"
 
-      # ===== Helpers: deactivate one integration by project endpoint =====
+      # ===== Helper: deactivate one integration by project endpoint =====
       proj_deactivate() {
         local proj="$1" ; local id="$2"
         echo ">> Deactivating id=${id}"
@@ -55,31 +55,32 @@ steps:
         echo "✔ Deactivated ${id}"
       }
 
-      # ===== List project integrations using official endpoint, parse via temp Python file =====
+      # ===== List project integrations using official endpoint; parse with a temp Python file (no heredocs) =====
       list_proj_integrations() {
         local proj="$1" ; local outfile_json="$2"
         curl -s -H "Authorization: Bearer $TOKEN" \
           "$BASE/projects/${proj}/integrations?integrationInstance=${OIC_INSTANCE_ID}" > "$outfile_json"
 
         PYFILE="$(mktemp)"
-cat > "$PYFILE" <<'PY'
-import sys, json
-p = json.load(open(sys.argv[1],'rb'))
-arr = []
-if isinstance(p, dict):
-    arr = p.get('items') or p.get('integrations') or []
-elif isinstance(p, list):
-    arr = p
-for v in arr:
-    if not isinstance(v, dict):
-        continue
-    iid = v.get('id')                      # expected: code%7Cversion
-    code = v.get('code') or v.get('name')  # fallback name
-    ver  = v.get('version') or v.get('integrationVersion')
-    st   = v.get('activation-status') or v.get('status')
-    if iid and code and ver:
-        print(f"{iid}|{code}|{ver}|{st or 'UNKNOWN'}")
-PY
+        printf '%s\n' \
+          'import sys, json' \
+          'p = json.load(open(sys.argv[1], "rb"))' \
+          'arr = []' \
+          'if isinstance(p, dict):' \
+          '    arr = p.get("items") or p.get("integrations") or []' \
+          'elif isinstance(p, list):' \
+          '    arr = p' \
+          'for v in arr:' \
+          '    if not isinstance(v, dict):' \
+          '        continue' \
+          '    iid = v.get("id")' \
+          '    code = v.get("code") or v.get("name")' \
+          '    ver  = v.get("version") or v.get("integrationVersion")' \
+          '    st   = v.get("activation-status") or v.get("status")' \
+          '    if iid and code and ver:' \
+          '        print(f"{iid}|{code}|{ver}|{st or ''UNKNOWN''}")' \
+        > "$PYFILE"
+
         python3 "$PYFILE" "$outfile_json"
         rm -f "$PYFILE"
       }
@@ -109,7 +110,7 @@ PY
       if [ "$HTTP_CODE" = "200" ]; then
         echo ">> Project ${PROJ_ID} exists → deleting…"
         curl -f -s -S -X DELETE \
-          -H "Authorization: BearER $TOKEN" \
+          -H "Authorization: Bearer $TOKEN" \
           "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}"
         echo "✔ Deleted ${PROJ_ID}"
       elif [ "$HTTP_CODE" = "404" ]; then
