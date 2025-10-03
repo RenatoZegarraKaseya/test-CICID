@@ -4,7 +4,7 @@ shell: bash
 
 steps:
   - type: Command
-    name: "Upsert OIC Project (.car) (OAuth) — no heredocs"
+    name: "Upsert OIC Project (.car) (OAuth) — multipart import"
     timeoutInSeconds: 1800
     command: |
       set -euo pipefail
@@ -38,7 +38,6 @@ steps:
 
       [ -n "$CAR_FILE" ] && [ -f "$CAR_FILE" ] || { echo "❌ No .car found under PAAS/OIC (looked in ${CAR_DIR} and recursively)."; exit 1; }
       echo ">> Using .car: $CAR_FILE"
-
 
       # ===== Get OAuth2 token (client_credentials) =====
       TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
@@ -127,11 +126,11 @@ steps:
 
       # ===== 3) Import (Add) project .car =====
       echo "== Importing Project (.car) =="
-      curl -f -s -S \
+      curl -f -s -S -X POST \
         -H "Authorization: Bearer $TOKEN" \
-        -H "Accept: application/json" \
-        -X POST "$BASE/projects/archive?integrationInstance=${OIC_INSTANCE_ID}" \
-        -F "file=@${CAR_FILE}"
+        -F "file=@${CAR_FILE}" \
+        -F "type=application/octet-stream" \
+        "$BASE/projects/archive?integrationInstance=${OIC_INSTANCE_ID}"
       echo "✔ Import OK: $CAR_FILE"
 
       echo "✅ Project upsert completed"
