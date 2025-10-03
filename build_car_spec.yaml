@@ -121,11 +121,8 @@ steps:
           -H "Authorization: Bearer $TOKEN" \
           "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}"
         echo "✔ Deleted ${PROJ_ID}"
-      elif [ "$HTTP_CODE" = "404" ]; then
-        echo ">> Project ${PROJ_ID} not found → will import new"
       else
-        echo "❌ GET /projects/${PROJ_ID} returned HTTP $HTTP_CODE"
-        exit 1
+        echo ">> Project ${PROJ_ID} not found → will import new"
       fi
 
       # ===== 3) Import (Add) project .car =====
