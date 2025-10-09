@@ -27,15 +27,11 @@ steps:
       echo ">> Listing ${CAR_DIR}:"
       ls -la "${CAR_DIR}" || true
 
-      # First try exact match: <PROJ_ID>.car in PAAS/OIC/Integrations
       CAR_FILE="${CAR_DIR}/${PROJ_ID}.car"
-
       if [ ! -f "$CAR_FILE" ]; then
         echo ">> ${CAR_FILE} not found. Trying recursive search under PAAS/OIC…"
-        # Recursive fallback: first *.car found anywhere under PAAS/OIC
         CAR_FILE="$(find PAAS/OIC -type f -iname '*.car' | head -n1 || true)"
       fi
-
       [ -n "$CAR_FILE" ] && [ -f "$CAR_FILE" ] || { echo "❌ No .car found under PAAS/OIC (looked in ${CAR_DIR} and recursively)."; exit 1; }
       echo ">> Using .car: $CAR_FILE"
 
@@ -48,21 +44,29 @@ steps:
 
       BASE="$OIC_HOST/ic/api/integration/v1"
 
-      # ===== Helper: deactivate one integration by project endpoint =====
+      # ===== Helpers (sin heredocs) =====
+      urlencode() {
+        python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+      }
+
+      # POST /projects/{projectId}/integrations/{id} where id = URLENCODE(code|version)
       proj_deactivate() {
-        local proj="$1" ; local id="$2"
-        echo ">> Deactivating id=${id}"
+        local proj="$1" ; local code="$2" ; local ver="$3"
+        local id_encoded
+        id_encoded="$(urlencode "${code}|${ver}")"
+        echo ">> Deactivating ${code}|${ver}"
         curl -f -s -S \
           -H "Authorization: Bearer $TOKEN" \
           -H "X-HTTP-Method-Override: PATCH" \
           -H "Content-Type: application/json" \
           -H "Accept: application/json" \
           -d '{"status":"DEACTIVATED"}' \
-          -X POST "$BASE/projects/${proj}/integrations/${id}?integrationInstance=${OIC_INSTANCE_ID}" >/dev/null
-        echo "✔ Deactivated ${id}"
+          -X POST "$BASE/projects/${proj}/integrations/${id_encoded}?integrationInstance=${OIC_INSTANCE_ID}" >/dev/null || {
+            echo "⚠️ Could not PATCH ${code}|${ver} (maybe not in project or already inactive)"
+          }
       }
 
-      # ===== List project integrations using official endpoint; parse with a temp Python file (no heredocs) =====
+      # Lista integraciones y emite: CODE|VERSION|STATUS (upper) — usando archivo Python temporal con printf (sin heredocs)
       list_proj_integrations() {
         local proj="$1" ; local outfile_json="$2"
         curl -s -H "Authorization: Bearer $TOKEN" \
@@ -80,29 +84,28 @@ steps:
           'for v in arr:' \
           '    if not isinstance(v, dict):' \
           '        continue' \
-          '    iid = v.get("id")' \
           '    code = v.get("code") or v.get("name")' \
           '    ver  = v.get("version") or v.get("integrationVersion")' \
-          '    st   = v.get("activation-status") or v.get("status")' \
-          '    if iid and code and ver:' \
-          '        print(f"{iid}|{code}|{ver}|{st or ''UNKNOWN''}")' \
+          '    st   = (v.get("activation-status") or v.get("status") or "").upper()' \
+          '    if code and ver:' \
+          '        print(f"{code}|{ver}|{st}")' \
         > "$PYFILE"
 
         python3 "$PYFILE" "$outfile_json"
         rm -f "$PYFILE"
       }
 
-      # ===== 1) Pre-deactivate active integrations =====
+      # ===== 1) Pre-deactivate ACTIVE integrations =====
       echo "== Pre-deactivate active integrations =="
       TMP_JSON="$(mktemp)"
       if list_proj_integrations "$PROJ_ID" "$TMP_JSON" >/tmp/integrs.list 2>/dev/null; then
-        while IFS='|' read -r ID CODE VER STATUS; do
-          [ -n "${ID:-}" ] || continue
-          ST_UP="$(echo "${STATUS:-}" | tr '[:lower:]' '[:upper:]')"
-          if echo "$ST_UP" | grep -Eq 'ACTIV'; then
-            proj_deactivate "$PROJ_ID" "$ID" || echo "⚠️ Could not deactivate ${ID} (${CODE}:${VER})"
+        while IFS='|' read -r CODE VER STATUS; do
+          [ -n "${CODE:-}" ] || continue
+          if echo "${STATUS:-}" | grep -Eq 'ACTIV'; then
+            proj_deactivate "$PROJ_ID" "$CODE" "$VER"
+            sleep 8
           else
-            echo ">> ${CODE}:${VER} is ${STATUS:-UNKNOWN}, no deactivation needed."
+            echo ">> ${CODE}|${VER} is ${STATUS:-UNKNOWN}, no deactivation needed."
           fi
         done < /tmp/integrs.list
       else
@@ -114,12 +117,30 @@ steps:
       HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
         -H "Authorization: Bearer $TOKEN" \
         "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}")
+
       if [ "$HTTP_CODE" = "200" ]; then
         echo ">> Project ${PROJ_ID} exists → deleting…"
-        curl -f -s -S -X DELETE \
+        DEL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
           -H "Authorization: Bearer $TOKEN" \
-          "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}"
-        echo "✔ Deleted ${PROJ_ID}"
+          "$BASE/projects/${PROJ_ID}?integrationInstance=${OIC_INSTANCE_ID}")
+        if [ "$DEL_CODE" = "204" ] || [ "$DEL_CODE" = "200" ]; then
+          echo "✔ Deleted ${PROJ_ID}"
+        elif [ "$DEL_CODE" = "412" ]; then
+          echo "❌ 412 Precondition Failed: some integrations still active."
+          echo ">> Current states:"
+          TMP2="$(mktemp)"
+          list_proj_integrations "$PROJ_ID" "$TMP2"
+          while IFS='|' read -r C V S; do
+            if echo "${S:-}" | grep -Eq 'ACTIV'; then
+              echo "   - ${C}|${V}|${S}"
+            fi
+          done < <(cat "$TMP2")
+          rm -f "$TMP2"
+          exit 1
+        else
+          echo "❌ DELETE /projects/${PROJ_ID} returned $DEL_CODE"
+          exit 1
+        fi
       else
         echo ">> Project ${PROJ_ID} not found → will import new"
       fi
