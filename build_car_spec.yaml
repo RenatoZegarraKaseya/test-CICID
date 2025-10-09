@@ -60,7 +60,7 @@ steps:
           -H "X-HTTP-Method-Override: PATCH" \
           -H "Content-Type: application/json" \
           -H "Accept: application/json" \
-          -d '{"status":"DEACTIVATED"}' \
+          -d '{"status":"CONFIGURED"}' \
           -X POST "$BASE/projects/${proj}/integrations/${id_encoded}?integrationInstance=${OIC_INSTANCE_ID}" >/dev/null || {
             echo "⚠️ Could not PATCH ${code}|${ver} (maybe not in project or already inactive)"
           }
@@ -155,3 +155,4 @@ steps:
       echo "✔ Import OK: $CAR_FILE"
 
       echo "✅ Project upsert completed"
+
