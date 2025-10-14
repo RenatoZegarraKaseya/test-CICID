@@ -28,23 +28,48 @@ steps:
 
       echo "== Installing Oracle Instant Client (zip local) =="
 
-      # 1) Limpia destino y prepara carpeta
-      rm -rf /opt/instantclient
+      # 1) Limpiar y preparar
+      rm -rf /opt/instantclient /opt/instantclient_* || true
       mkdir -p /opt
       
-      # 2) Descomprime ambos zips SIN preguntar (-o overwrite, -q quiet)
-      unzip -oq ./instantclient-basiclite.zip -d /opt
+      # 2) Descomprimir zips SIN preguntar (-o overwrite)
+      unzip -oq ./instantclient-basiclite.zip -d /opt || unzip -oq ./instantclient-basic.zip -d /opt
       unzip -oq ./instantclient-sqlplus.zip  -d /opt
       
-      # 3) Detecta el directorio real (p.ej. /opt/instantclient_21_13) y crea alias /opt/instantclient
-      IC_DIR="$(find /opt -maxdepth 1 -type d -name 'instantclient_*' | head -n1)"
-      [ -n "$IC_DIR" ] || { echo "❌ No se encontró carpeta instantclient_* tras unzip"; exit 1; }
-      ln -s "$IC_DIR" /opt/instantclient
+      # 3) Detectar carpeta real (p.ej. /opt/instantclient_21_13) y crear alias /opt/instantclient
+      IC_HOME="$(find /opt -maxdepth 1 -type d -name 'instantclient_*' | head -n1)"
+      [ -n "$IC_HOME" ] || { echo "❌ instantclient_* directory not found after unzip"; ls -la /opt; exit 1; }
+      rm -f /opt/instantclient && ln -s "$IC_HOME" /opt/instantclient
       
-      # 4) Exporta rutas
-      export LD_LIBRARY_PATH="/opt/instantclient:${LD_LIBRARY_PATH:-}"
-      export PATH="/opt/instantclient:${PATH}"
-      echo ">> Instant Client in: $IC_DIR"
+      # 4) Verificar que sqlplus exista
+      if [ ! -f "$IC_HOME/sqlplus" ]; then
+        echo "❌ sqlplus not found in $IC_HOME"
+        echo "== Listing $IC_HOME =="
+        ls -la "$IC_HOME"
+        echo "== Subdirs =="
+        find "$IC_HOME" -maxdepth 2 -type f -name 'sqlplus' -ls || true
+        exit 1
+      fi
+      chmod +x "$IC_HOME/sqlplus"
+      
+      # 5) Exportar rutas (también LD_LIBRARY_PATH)
+      export LD_LIBRARY_PATH="$IC_HOME:${LD_LIBRARY_PATH:-}"
+      export PATH="$IC_HOME:$PATH"
+      echo ">> Instant Client in: $IC_HOME"
+      ls -1 "$IC_HOME" | sed 's/^/ - /'
+      
+      # ... (wallet unzip y TNS_ADMIN como ya lo tienes) ...
+      
+      echo "== Test connection with sqlplus =="
+      echo "select 'PING' as ok from dual; exit;" | "$IC_HOME/sqlplus" -L -S "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" || {
+        echo "❌ sqlplus connection failed"
+        exit 1
+      }
+      echo "✅ Connection OK"
+      
+      echo "== Running script =="
+      "$IC_HOME/sqlplus" -L "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
+
 
 
       # Detecta carpeta real (instantclient_XX_X)
@@ -126,4 +151,5 @@ steps:
       sqlplus -L "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
 
       echo "✅ Deploy completed"
+
 
