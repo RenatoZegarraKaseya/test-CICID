@@ -4,84 +4,102 @@ shell: bash
 
 steps:
   - type: Command
-    name: "ATP: Validate network + run SQL (Instant Client)"
-    timeoutInSeconds: 1800
-    command: |
-      set -euo pipefail
+  name: "ATP: Validate network + run SQL (Instant Client)"
+  timeoutInSeconds: 1800
+  command: |
+    set -euo pipefail
 
-      : "${ATP_ALIAS:?Missing ATP_ALIAS}"           
-      : "${DB_USER:?Missing DB_USER}"
-      : "${DB_PASS:?Missing DB_PASS}"
-      : "${WALLET_DIR:?Missing WALLET_DIR}"         
-      : "${WALLET_FILE:?Missing WALLET_FILE}"       
-      : "${DB_SCRIPT_PATH:?Missing DB_SCRIPT_PATH}" 
+    : "${ATP_ALIAS:?Missing ATP_ALIAS}"
+    : "${DB_USER:?Missing DB_USER}"
+    : "${DB_PASS:?Missing DB_PASS}"
+    : "${WALLET_DIR:?Missing WALLET_DIR}"
+    : "${WALLET_FILE:?Missing WALLET_FILE}"
+    : "${DB_SCRIPT_PATH:?Missing DB_SCRIPT_PATH}"
 
-      echo "== Installing Oracle Instant Client (zip local) =="
-      [ -f "./instantclient-basiclite.zip" ] || [ -f "./instantclient-basic.zip" ] || { echo "❌ instantclient-basic(lite).zip not found at repo root"; exit 1; }
-      [ -f "./instantclient-sqlplus.zip" ] || { echo "❌ instantclient-sqlplus.zip not found at repo root"; exit 1; }
+    echo "== Installing Oracle Instant Client (zip local) =="
+    [ -f "./instantclient-basiclite.zip" ] || [ -f "./instantclient-basic.zip" ] || { echo "❌ instantclient-basic(lite).zip not found at repo root"; exit 1; }
+    [ -f "./instantclient-sqlplus.zip" ] || { echo "❌ instantclient-sqlplus.zip not found at repo root"; exit 1; }
 
-      mkdir -p /opt/instantclient
-      unzip -qo ./instantclient-basic*.zip -d /opt/instantclient
-      unzip -qo ./instantclient-sqlplus*.zip -d /opt/instantclient
+    mkdir -p /opt/instantclient
+    unzip -qo ./instantclient-basic*.zip -d /opt/instantclient
+    unzip -qo ./instantclient-sqlplus*.zip -d /opt/instantclient
 
-      export PATH="/opt/instantclient/instantclient_21_*/:$PATH"
-      export LD_LIBRARY_PATH="/opt/instantclient/instantclient_21_*/"
+    # === Detect the actual Instant Client dir (works for 19/21/23…) ===
+    IC_DIR="$(ls -d /opt/instantclient/instantclient_* | head -n1 || true)"
+    [ -n "$IC_DIR" ] || { echo "❌ instantclient_* directory not found under /opt/instantclient"; exit 1; }
+    [ -x "$IC_DIR/sqlplus" ] || { echo "❌ sqlplus binary not found in $IC_DIR"; ls -la "$IC_DIR"; exit 1; }
 
-      echo "== Unzip wallet and configure =="
-      WALLET_ABS="$(cd "$WALLET_DIR" && pwd)"
-      WORK_WALLET="$WALLET_ABS/wallet"
-      rm -rf "$WORK_WALLET" && mkdir -p "$WORK_WALLET"
-      unzip -qo "$WALLET_ABS/$WALLET_FILE" -d "$WORK_WALLET"
+    export PATH="$IC_DIR:$PATH"
+    export LD_LIBRARY_PATH="$IC_DIR"
 
-      REAL_WALLET_DIR="$(find "$WORK_WALLET" -type f -name 'tnsnames.ora' -printf '%h\n' | head -n1 || true)"
-      [ -n "$REAL_WALLET_DIR" ] || { echo "❌ tnsnames.ora no encontrado en el wallet"; exit 1; }
+    echo "== Unzip wallet and configure =="
+    WALLET_ABS="$(cd "$WALLET_DIR" && pwd)"
+    WORK_WALLET="$WALLET_ABS/wallet"
+    rm -rf "$WORK_WALLET" && mkdir -p "$WORK_WALLET"
+    unzip -qo "$WALLET_ABS/$WALLET_FILE" -d "$WORK_WALLET"
 
-      echo "== tnsnames.ora (buscando alias '${ATP_ALIAS}') =="
-      grep -n "$ATP_ALIAS" "$REAL_WALLET_DIR/tnsnames.ora" || { echo "❌ Alias ${ATP_ALIAS} no existe en tnsnames.ora"; exit 1; }
+    REAL_WALLET_DIR="$(find "$WORK_WALLET" -type f -name 'tnsnames.ora' -printf '%h\n' | head -n1 || true)"
+    [ -n "$REAL_WALLET_DIR" ] || { echo "❌ tnsnames.ora no encontrado en el wallet"; exit 1; }
 
-      export TNS_ADMIN="$REAL_WALLET_DIR"
+    echo "== tnsnames.ora (buscando alias '${ATP_ALIAS}') =="
+    grep -n "$ATP_ALIAS" "$REAL_WALLET_DIR/tnsnames.ora" || { echo "❌ Alias ${ATP_ALIAS} no existe en tnsnames.ora"; exit 1; }
 
-      IC_DIR="/opt/instantclient/instantclient_"*
-      IC_NET="$IC_DIR/network/admin"
-      mkdir -p "$IC_NET"
-      cp -f "$REAL_WALLET_DIR"/tnsnames.ora "$IC_NET"/
-      cp -f "$REAL_WALLET_DIR"/sqlnet.ora "$IC_NET"/ 2>/dev/null || true
-      cp -f "$REAL_WALLET_DIR"/ojdbc.properties "$IC_NET"/ 2>/dev/null || true
+    export TNS_ADMIN="$REAL_WALLET_DIR"
 
-      echo "== Verificando rutas que usará SQL*Plus =="
-      echo "TNS_ADMIN=$TNS_ADMIN"
-      ls -l "$TNS_ADMIN"
+    # Copiar a la ruta de red estándar de Instant Client (por si sqlplus mira ahí primero)
+    IC_NET="$IC_DIR/network/admin"
+    mkdir -p "$IC_NET"
+    cp -f "$REAL_WALLET_DIR"/tnsnames.ora "$IC_NET"/
+    cp -f "$REAL_WALLET_DIR"/sqlnet.ora "$IC_NET"/ 2>/dev/null || true
+    cp -f "$REAL_WALLET_DIR"/ojdbc.properties "$IC_NET"/ 2>/dev/null || true
 
-      {
-        echo "WALLET_LOCATION = (SOURCE=(METHOD=FILE)(METHOD_DATA=(DIRECTORY=\"$TNS_ADMIN\")))"
-        echo "SSL_SERVER_DN_MATCH = no"
-        echo "SQLNET.AUTHENTICATION_SERVICES = (TCPS)"
-        echo "SSL_VERSION = 1.2"
-      } > "$TNS_ADMIN/sqlnet.ora"
+    # Reescribir sqlnet.ora con ruta absoluta del wallet
+    {
+      echo "WALLET_LOCATION = (SOURCE=(METHOD=FILE)(METHOD_DATA=(DIRECTORY=\"$TNS_ADMIN\")))"
+      echo "SSL_SERVER_DN_MATCH = no"
+      echo "SQLNET.AUTHENTICATION_SERVICES = (TCPS)"
+      echo "SSL_VERSION = 1.2"
+    } > "$TNS_ADMIN/sqlnet.ora"
 
-      export JAVA_TOOL_OPTIONS="-Doracle.net.tns_admin=$TNS_ADMIN -Doracle.net.wallet_location=$TNS_ADMIN -Doracle.net.ssl_server_dn_match=false"
+    # Forzar propiedades de red en JVM/cliente
+    export JAVA_TOOL_OPTIONS="-Doracle.net.tns_admin=$TNS_ADMIN -Doracle.net.wallet_location=$TNS_ADMIN -Doracle.net.ssl_server_dn_match=false"
 
-      echo "== Comprobación de red =="
-      HOST="$(awk -v a="$ATP_ALIAS" '
-        BEGIN{IGNORECASE=1}
-        $0 ~ a " *=" { f=1 }
-        f && /host *=/ {
-          gsub(/[()]/,""); gsub(/host *= */,""); print $0; exit
-        }' "$TNS_ADMIN/tnsnames.ora" | awk '{print $1}')"
-      [ -n "$HOST" ] && echo ">> Host ADB: $HOST" || echo ">> (No se pudo extraer host; se omite check)"
-      if [ -n "$HOST" ] && timeout 2 bash -c ">/dev/tcp/$HOST/1522" 2>/dev/null; then
+    echo "== Verificando rutas que usará SQL*Plus =="
+    echo "IC_DIR=$IC_DIR"
+    echo "PATH=$PATH"
+    echo "TNS_ADMIN=$TNS_ADMIN"
+    ls -l "$TNS_ADMIN" || true
+    ls -l "$IC_DIR" || true
+
+    # === EXTRAER HOST del descriptor (soporta una sola línea) ===
+    # 1) Coge la línea del alias, normaliza espacios, elimina saltos y paréntesis
+    RAW_LINE="$(awk -v a="$ATP_ALIAS" 'BEGIN{IGNORECASE=1} $0 ~ a"[[:space:]]*=" {print $0; exit}' "$TNS_ADMIN/tnsnames.ora" | tr -d '\n')"
+    if [ -z "$RAW_LINE" ]; then
+      # Fallback: toma 3 líneas (alias y dos siguientes) y únelas
+      RAW_LINE="$(grep -iA2 "^$ATP_ALIAS[[:space:]]*=" "$TNS_ADMIN/tnsnames.ora" | tr -d '\n')"
+    fi
+    HOST="$(echo "$RAW_LINE" | sed -E 's/[[:space:]]+/ /g' | tr '()' '  ' | sed -nE 's/.*host *= *([^ )]+).*/\1/p')"
+
+    if [ -n "${HOST:-}" ]; then
+      echo ">> Host ADB: $HOST"
+      if timeout 2 bash -c ">/dev/tcp/$HOST/1522" 2>/dev/null; then
         echo "✔ Puerto 1522 accesible"
       else
         echo "⚠️ No se pudo abrir TCP 1522 a $HOST (verifica NSG/route/VPN/PE)."
       fi
+    else
+      echo "⚠️ No se pudo extraer 'host=' del descriptor de ${ATP_ALIAS}. (continuo igualmente)"
+    fi
 
-      echo "== Test connection with SQL*Plus =="
-      printf '%s\n' \
-        "connect ${DB_USER}/${DB_PASS}@${ATP_ALIAS}" \
-        "select 'PING' ok from dual;" \
-        "exit" | sqlplus -s /nolog || { echo "❌ SQL*Plus no pudo resolver ${ATP_ALIAS} (ORA-12154)."; exit 1; }
+    echo "== Test connection with SQL*Plus =="
+    printf '%s\n' \
+      "connect ${DB_USER}/${DB_PASS}@${ATP_ALIAS}" \
+      "select 'PING' ok from dual;" \
+      "exit" | sqlplus -s /nolog || { echo "❌ SQL*Plus no pudo resolver ${ATP_ALIAS} (ORA-12154) o no conectó."; exit 1; }
 
-      echo "== Ejecutando script SQL =="
-      sqlplus -s "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
+    echo "== Ejecutando script SQL =="
+    sqlplus -s "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
 
-      echo "✅ Conexión y ejecución completadas correctamente."
+    echo "✅ Conexión y ejecución completadas correctamente."
+
+
