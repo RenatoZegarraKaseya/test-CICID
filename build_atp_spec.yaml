@@ -1,36 +1,126 @@
-- type: Command
-  name: "Deploy 1 DB object to ATP (SQLcl)"
-  timeoutInSeconds: 900
-  command: |
-    set -euo pipefail
+version: 0.1
+component: build
+shell: bash
 
-    : "${ATP_ALIAS:?Falta ATP_ALIAS}"      # ex: atp_high
-    : "${DB_USER:?Falta DB_USER}"          # ex: APP_USER
-    : "${DB_PASS:?Falta DB_PASS}"
-    : "${WALLET_DIR:?Falta WALLET_DIR}"    # ex: wallet
-    : "${DB_SCRIPT_PATH:?Falta DB_SCRIPT_PATH}"  # ex: PAAS/ATP/001_objeto_unico.sql
+steps:
+  - type: Command
+    name: "ATP: Validate network + run SQL (Instant Client)"
+    timeoutInSeconds: 1200
+    command: |
+      set -euo pipefail
 
-    [ -f "$DB_SCRIPT_PATH" ] || { echo "$DB_SCRIPT_PATH not exists"; exit 1; }
+      # ===== Parámetros requeridos =====
+      : "${ATP_ALIAS:?Missing ATP_ALIAS}"            # alias exacto en tnsnames.ora del wallet (ej: ksydev1atp_high)
+      : "${DB_USER:?Missing DB_USER}"
+      : "${DB_PASS:?Missing DB_PASS}"
+      : "${WALLET_DIR:?Missing WALLET_DIR}"          # carpeta donde está el ZIP del wallet (ej: .)
+      : "${WALLET_FILE:?Missing WALLET_FILE}"        # nombre del ZIP del wallet (ej: Wallet_ksydev1atp.zip)
+      : "${DB_SCRIPT_PATH:?Missing DB_SCRIPT_PATH}"  # script a ejecutar (ej: PAAS/ATP/001_objeto_unico.sql)
+      ATP_HOST="${ATP_HOST:-}"                       # opcional: host explícito para el check de red
 
-    # 1) Install SQLcl
-    curl -fLSso sqlcl.zip https://download.oracle.com/otn_software/java/sqldeveloper/sqlcl-latest.zip
-    unzip -q sqlcl.zip -d /opt/sqlcl
-    export PATH="/opt/sqlcl/sqlcl/bin:$PATH"
+      echo "== Params =="
+      echo "ATP_ALIAS=$ATP_ALIAS"
+      echo "WALLET_ZIP=$WALLET_DIR/$WALLET_FILE"
+      echo "DB_SCRIPT_PATH=$DB_SCRIPT_PATH"
 
-    # 2) Prepare wallet and TNS_ADMIN
-    mkdir -p "$WALLET_DIR/wallet"
-    unzip -qo "$WALLET_DIR/Wallet_ATP.zip" -d "$WALLET_DIR/wallet"
-    export TNS_ADMIN="$WALLET_DIR/wallet"
+      [ -f "$DB_SCRIPT_PATH" ] || { echo "❌ Script not found: $DB_SCRIPT_PATH"; exit 1; }
+      [ -f "$WALLET_DIR/$WALLET_FILE" ] || { echo "❌ Wallet zip not found: $WALLET_DIR/$WALLET_FILE"; exit 1; }
 
-    # 3) validate connection
-    printf '%s\n' \
-      "connect ${DB_USER}/${DB_PASS}@${ATP_ALIAS}" \
-      "select 'PING' as ok from dual;" \
-      "exit" \
-    | sql /nolog
+      # ===== Instant Client desde ZIPs en la raíz del repo =====
+      echo "== Installing Oracle Instant Client (zip local) =="
+      IC_DIR="/opt/instantclient"
+      rm -rf "$IC_DIR" && mkdir -p "$IC_DIR"
 
-    # 4) execute script
-    echo ">> executing $DB_SCRIPT_PATH"
-    sql "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
+      # básico o basiclite
+      if [ -f "./instantclient-basiclite.zip" ]; then
+        unzip -q ./instantclient-basiclite.zip -d "$IC_DIR"
+      elif [ -f "./instantclient-basic.zip" ]; then
+        unzip -q ./instantclient-basic.zip -d "$IC_DIR"
+      else
+        echo "❌ instantclient-basic(lite).zip not found at repo root"
+        exit 1
+      fi
 
-    echo "✅ Deploy completed"
+      # sqlplus
+      [ -f "./instantclient-sqlplus.zip" ] || { echo "❌ instantclient-sqlplus.zip not found at repo root"; exit 1; }
+      unzip -q ./instantclient-sqlplus.zip -d "$IC_DIR"
+
+      # Detecta carpeta real (instantclient_XX_X)
+      IC_HOME="$(find "$IC_DIR" -maxdepth 1 -type d -name 'instantclient_*' | head -n1)"
+      [ -n "$IC_HOME" ] || { echo '❌ instantclient_* directory not found after unzip'; exit 1; }
+
+      export LD_LIBRARY_PATH="$IC_HOME:${LD_LIBRARY_PATH:-}"
+      export PATH="$IC_HOME:$PATH"
+
+      echo "IC_HOME=$IC_HOME"
+      ls -1 "$IC_HOME" | sed 's/^/ - /'
+
+      # ===== Descomprimir y preparar el wallet =====
+      echo "== Preparing wallet =="
+      WALLET_ABS="$(cd "$WALLET_DIR" && pwd)"
+      WORK_WALLET="$WALLET_ABS/wallet"
+      rm -rf "$WORK_WALLET" && mkdir -p "$WORK_WALLET"
+      unzip -qo "$WALLET_ABS/$WALLET_FILE" -d "$WORK_WALLET"
+
+      # Detecta la carpeta real que contiene cwallet.sso (por si el ZIP trae subcarpeta)
+      REAL_WALLET_DIR="$(find "$WORK_WALLET" -type f -name 'cwallet.sso' -printf '%h\n' | head -n1 || true)"
+      [ -n "$REAL_WALLET_DIR" ] || { echo "❌ cwallet.sso not found after unzip"; exit 1; }
+
+      export TNS_ADMIN="$REAL_WALLET_DIR"
+      echo "TNS_ADMIN=$TNS_ADMIN"
+      ls -l "$TNS_ADMIN"
+
+      [ -s "$TNS_ADMIN/cwallet.sso" ]  || { echo "❌ cwallet.sso missing/empty"; exit 1; }
+      [ -s "$TNS_ADMIN/tnsnames.ora" ] || { echo "❌ tnsnames.ora missing/empty"; exit 1; }
+      [ -s "$TNS_ADMIN/sqlnet.ora" ]   || { echo "❌ sqlnet.ora missing/empty"; exit 1; }
+
+      # Forzar configuración mínima y ruta ABS del wallet en sqlnet.ora (evita '?/network/admin')
+      {
+        echo "WALLET_LOCATION = (SOURCE=(METHOD=FILE)(METHOD_DATA=(DIRECTORY=\"$TNS_ADMIN\")))"
+        echo "SSL_SERVER_DN_MATCH = no"
+        echo "SQLNET.AUTHENTICATION_SERVICES = (TCPS)"
+        echo "SSL_VERSION = 1.2"
+      } > "$TNS_ADMIN/sqlnet.ora"
+
+      echo "== sqlnet.ora =="
+      sed -n '1,120p' "$TNS_ADMIN/sqlnet.ora"
+
+      # ===== Validar que el alias exista en tnsnames.ora =====
+      echo "== tnsnames.ora (looking for alias '$ATP_ALIAS') =="
+      if ! grep -i -q "^[[:space:]]*${ATP_ALIAS}[[:space:]]*=" "$TNS_ADMIN/tnsnames.ora"; then
+        echo "❌ Alias '$ATP_ALIAS' not found in tnsnames.ora"
+        exit 1
+      fi
+      grep -n "^[[:space:]]*${ATP_ALIAS}[[:space:]]*=" -n "$TNS_ADMIN/tnsnames.ora" | head -1
+
+      # ===== Check de red al puerto 1522 (opcional pero útil) =====
+      if [ -z "$ATP_HOST" ]; then
+        # intenta extraer el primer host= dentro del archivo; si hay varios, toma el primero
+        ATP_HOST="$(grep -i -o 'host=[^)]*' "$TNS_ADMIN/tnsnames.ora" | head -1 | awk -F= '{print $2}' | tr -d '[:space:]')"
+      fi
+
+      if [ -n "$ATP_HOST" ]; then
+        echo "== Network check → ${ATP_HOST}:1522 =="
+        if bash -c "cat </dev/null >/dev/tcp/${ATP_HOST}/1522" 2>/dev/null; then
+          echo "✅ Port 1522 reachable"
+        else
+          echo "⚠️  Port 1522 NOT reachable — revisa egress/NSG/security list de la subred"
+          # No abortamos aquí para ver si sqlplus igual conecta (por DNS internos), pero lo recomendable es arreglar la red.
+        fi
+      else
+        echo "ℹ️ No ATP_HOST provided and could not parse host from tnsnames.ora — skipping TCP check"
+      fi
+
+      # ===== Probar conexión con SQL*Plus (wallet mTLS) =====
+      echo "== Test connection with sqlplus =="
+      echo "select 'PING' as ok from dual; exit;" | sqlplus -L -S "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" || {
+        echo "❌ sqlplus connection failed"
+        exit 1
+      }
+      echo "✅ Connection OK"
+
+      # ===== Ejecutar script =====
+      echo "== Running script =="
+      sqlplus -L "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
+
+      echo "✅ Deploy completed"
