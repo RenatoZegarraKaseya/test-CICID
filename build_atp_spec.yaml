@@ -26,24 +26,26 @@ steps:
       [ -f "$DB_SCRIPT_PATH" ] || { echo "❌ Script not found: $DB_SCRIPT_PATH"; exit 1; }
       [ -f "$WALLET_DIR/$WALLET_FILE" ] || { echo "❌ Wallet zip not found: $WALLET_DIR/$WALLET_FILE"; exit 1; }
 
-      # ===== Instant Client desde ZIPs en la raíz del repo =====
       echo "== Installing Oracle Instant Client (zip local) =="
-      IC_DIR="/opt/instantclient"
-      rm -rf "$IC_DIR" && mkdir -p "$IC_DIR"
 
-      # básico o basiclite
-      if [ -f "./instantclient-basiclite.zip" ]; then
-        unzip -q ./instantclient-basiclite.zip -d "$IC_DIR"
-      elif [ -f "./instantclient-basic.zip" ]; then
-        unzip -q ./instantclient-basic.zip -d "$IC_DIR"
-      else
-        echo "❌ instantclient-basic(lite).zip not found at repo root"
-        exit 1
-      fi
+      # 1) Limpia destino y prepara carpeta
+      rm -rf /opt/instantclient
+      mkdir -p /opt
+      
+      # 2) Descomprime ambos zips SIN preguntar (-o overwrite, -q quiet)
+      unzip -oq ./instantclient-basiclite.zip -d /opt
+      unzip -oq ./instantclient-sqlplus.zip  -d /opt
+      
+      # 3) Detecta el directorio real (p.ej. /opt/instantclient_21_13) y crea alias /opt/instantclient
+      IC_DIR="$(find /opt -maxdepth 1 -type d -name 'instantclient_*' | head -n1)"
+      [ -n "$IC_DIR" ] || { echo "❌ No se encontró carpeta instantclient_* tras unzip"; exit 1; }
+      ln -s "$IC_DIR" /opt/instantclient
+      
+      # 4) Exporta rutas
+      export LD_LIBRARY_PATH="/opt/instantclient:${LD_LIBRARY_PATH:-}"
+      export PATH="/opt/instantclient:${PATH}"
+      echo ">> Instant Client in: $IC_DIR"
 
-      # sqlplus
-      [ -f "./instantclient-sqlplus.zip" ] || { echo "❌ instantclient-sqlplus.zip not found at repo root"; exit 1; }
-      unzip -q ./instantclient-sqlplus.zip -d "$IC_DIR"
 
       # Detecta carpeta real (instantclient_XX_X)
       IC_HOME="$(find "$IC_DIR" -maxdepth 1 -type d -name 'instantclient_*' | head -n1)"
@@ -124,3 +126,4 @@ steps:
       sqlplus -L "${DB_USER}/${DB_PASS}@${ATP_ALIAS}" @"$DB_SCRIPT_PATH"
 
       echo "✅ Deploy completed"
+
