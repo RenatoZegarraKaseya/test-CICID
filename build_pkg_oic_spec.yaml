@@ -4,14 +4,15 @@ shell: bash
 
 steps:
   - type: Command
-    name: "Replace OIC Package via PUT (OAuth)"
+    name: "Upsert OIC Package (PUT if exists, POST if not) — OAuth"
     timeoutInSeconds: 1200
     command: |
       set -euo pipefail
 
-      # ===== Required parameters (define them in DevOps) =====
-      : "${OIC_HOST:?Missing OIC_HOST}"                # e.g. https://design.integration.<region>.ocp.oraclecloud.com
-      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Service instance short name
+      # ===== Required parameters =====
+      : "${OIC_HOST:?Missing OIC_HOST}"                # https://design.integration.<region>.ocp.oraclecloud.com
+      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Instance short name (About > Service instance)
+      : "${PKG_NAME:?Missing PKG_NAME}"                # e.g. XX_COMMON_UTILS
       : "${PKG_FILE:?Missing PKG_FILE}"                # Full path to package archive (.par/.zip)
       : "${OAUTH_TOKEN_URL:?Missing OAUTH_TOKEN_URL}"
       : "${OAUTH_CLIENT_ID:?Missing OAUTH_CLIENT_ID}"
@@ -20,36 +21,74 @@ steps:
 
       [ -f "$PKG_FILE" ] || { echo "❌ Package file not found: $PKG_FILE"; exit 1; }
 
-      echo ">> OIC_HOST = $OIC_HOST"
+      echo ">> OIC_HOST        = $OIC_HOST"
       echo ">> OIC_INSTANCE_ID = $OIC_INSTANCE_ID"
-      echo ">> PKG_FILE = $PKG_FILE"
+      echo ">> PKG_NAME        = $PKG_NAME"
+      echo ">> PKG_FILE        = $PKG_FILE"
 
       BASE="$OIC_HOST/ic/api/integration/v1"
 
-      # ===== Get OAuth2 token (client_credentials) =====
+      # ===== Get OAuth2 token =====
+      echo "== Requesting OAuth2 token =="
       TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "grant_type=client_credentials&client_id=$OAUTH_CLIENT_ID&client_secret=$OAUTH_CLIENT_SECRET&scope=$OAUTH_SCOPE" \
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
       [ -n "$TOKEN" ] || { echo "❌ Could not obtain access_token"; exit 1; }
 
-      # ===== PUT /packages/archive (replace) =====
-      echo "== Uploading package (REPLACE via PUT) =="
-      RESP_FILE="$(mktemp)"
-      HTTP_CODE=$(curl -s -S -o "$RESP_FILE" -w "%{http_code}" \
-        -H "Authorization: Bearer $TOKEN" \
-        -X PUT "$BASE/packages/archive?integrationInstance=${OIC_INSTANCE_ID}" \
-        -F "file=@${PKG_FILE}" \
-        -F "type=application/octet-stream" || true)
+      echo "✅ Token obtained successfully"
 
-      if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-        echo "✅ Package replace OK — HTTP $HTTP_CODE"
+      # ===== Check if package exists =====
+      echo "== Checking if package '$PKG_NAME' exists =="
+      EXISTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer $TOKEN" \
+        "$BASE/packages/${PKG_NAME}?integrationInstance=${OIC_INSTANCE_ID}" || true)
+
+      echo ">> Package existence HTTP code: $EXISTS_CODE"
+
+      # ===== PUT (replace) if exists =====
+      if [ "$EXISTS_CODE" = "200" ]; then
+        echo "== Package exists → REPLACING via PUT =="
+        RESP_FILE="$(mktemp)"
+        HTTP_CODE=$(curl -s -S -o "$RESP_FILE" -w "%{http_code}" \
+          -H "Authorization: Bearer $TOKEN" \
+          -X PUT "$BASE/packages/archive?integrationInstance=${OIC_INSTANCE_ID}" \
+          -F "file=@${PKG_FILE}" \
+          -F "type=application/octet-stream" || true)
+
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+          echo "✅ Package replaced successfully — HTTP $HTTP_CODE"
+        else
+          echo "❌ PUT failed — HTTP $HTTP_CODE"
+          sed -n '1,200p' "$RESP_FILE" || true
+          rm -f "$RESP_FILE"
+          exit 1
+        fi
         rm -f "$RESP_FILE"
-        exit 0
+
+      # ===== POST (create) if not found =====
+      elif [ "$EXISTS_CODE" = "404" ]; then
+        echo "== Package not found → CREATING via POST =="
+        RESP_FILE="$(mktemp)"
+        HTTP_CODE=$(curl -s -S -o "$RESP_FILE" -w "%{http_code}" \
+          -H "Authorization: Bearer $TOKEN" \
+          -X POST "$BASE/packages/archive?integrationInstance=${OIC_INSTANCE_ID}" \
+          -F "file=@${PKG_FILE}" \
+          -F "type=application/octet-stream" || true)
+
+        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
+          echo "🆕 Package created successfully — HTTP $HTTP_CODE"
+        else
+          echo "❌ POST failed — HTTP $HTTP_CODE"
+          sed -n '1,200p' "$RESP_FILE" || true
+          rm -f "$RESP_FILE"
+          exit 1
+        fi
+        rm -f "$RESP_FILE"
+
+      else
+        echo "❌ Unexpected response code while checking package ($EXISTS_CODE)"
+        exit 1
       fi
 
-      echo "❌ Replace failed — HTTP $HTTP_CODE"
-      echo "— Response —"
-      sed -n '1,200p' "$RESP_FILE" || true
-      rm -f "$RESP_FILE"
-      exit 1
+      echo "✅ Package upsert completed successfully"
