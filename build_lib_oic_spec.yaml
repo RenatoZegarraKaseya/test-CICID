@@ -12,7 +12,7 @@ steps:
       # ===== Required parameters =====
       : "${OIC_HOST:?Missing OIC_HOST}"                # https://design.integration.<region>.ocp.oraclecloud.com
       : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Instance short name (About > Service instance)
-      : "${LIB_NAME:?Missing LIB_NAME}"                # e.g. XX_COMMON_UTILS
+      : "${LIB_ID:?Missing LIB_ID}"                # e.g. XX_COMMON_UTILS
       : "${LIB_FILE:?Missing LIB_FILE}"                # Full path to library archive (.zip)
       : "${OAUTH_TOKEN_URL:?Missing OAUTH_TOKEN_URL}"
       : "${OAUTH_CLIENT_ID:?Missing OAUTH_CLIENT_ID}"
@@ -23,7 +23,7 @@ steps:
 
       echo ">> OIC_HOST        = $OIC_HOST"
       echo ">> OIC_INSTANCE_ID = $OIC_INSTANCE_ID"
-      echo ">> LIB_NAME        = $LIB_NAME"
+      echo ">> LIB_ID        = $LIB_ID"
       echo ">> LIB_FILE        = $LIB_FILE"
 
       BASE="$OIC_HOST/ic/api/integration/v1"
@@ -39,10 +39,10 @@ steps:
       echo "✅ Token obtained successfully"
 
       # ===== Check if library exists =====
-      echo "== Checking if library '$LIB_NAME' exists =="
+      echo "== Checking if library '$LIB_ID' exists =="
       EXISTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
         -H "Authorization: Bearer $TOKEN" \
-        "$BASE/libraries/${LIB_NAME}?integrationInstance=${OIC_INSTANCE_ID}" || true)
+        "$BASE/libraries/${LIB_ID}?integrationInstance=${OIC_INSTANCE_ID}" || true)
 
       echo ">> Library existence HTTP code: $EXISTS_CODE"
 
