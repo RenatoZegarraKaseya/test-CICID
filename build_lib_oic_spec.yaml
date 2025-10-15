@@ -4,20 +4,21 @@ shell: bash
 
 steps:
   - type: Command
-    name: "Upsert OIC Library (PUT if exists, POST if not)"
+    name: "Upsert OIC Library (by ID — POST /{id}/archive or /archive)"
     timeoutInSeconds: 1200
     command: |
       set -euo pipefail
 
+      # ===== Required parameters =====
       : "${OIC_HOST:?Missing OIC_HOST}"                # https://design.integration.<region>.ocp.oraclecloud.com
-      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"
+      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Service instance short name
       : "${LIB_NAME:?Missing LIB_NAME}"                # e.g. EHC_CUSTOM_JS_FUNCTION
       : "${LIB_VERSION:?Missing LIB_VERSION}"          # e.g. 01.00.0000
       : "${LIB_FILE:?Missing LIB_FILE}"                # e.g. PAAS/OIC/Libraries/EHC_CUSTOM_JS_FUNCTION.zip
       : "${OAUTH_TOKEN_URL:?Missing OAUTH_TOKEN_URL}"
       : "${OAUTH_CLIENT_ID:?Missing OAUTH_CLIENT_ID}"
       : "${OAUTH_CLIENT_SECRET:?Missing OAUTH_CLIENT_SECRET}"
-      : "${OAUTH_SCOPE:=}"
+      : "${OAUTH_SCOPE:=}"                             # optional
 
       [ -f "$LIB_FILE" ] || { echo "❌ Library file not found: $LIB_FILE"; exit 1; }
 
@@ -31,27 +32,27 @@ steps:
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
       [ -n "$TOKEN" ] || { echo "❌ Could not obtain access_token"; exit 1; }
 
-      echo "== Checking if library exists: $LIB_NAME|$LIB_VERSION =="
+      echo "== Checking library existence (${LIB_NAME}|${LIB_VERSION}) =="
       EXISTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/json" \
         "$BASE/libraries/${LIB_ID_ENC}?integrationInstance=${OIC_INSTANCE_ID}" || true)
-
-      echo ">> Library existence HTTP code: $EXISTS_CODE"
+      echo ">> GET /libraries/{id} → HTTP $EXISTS_CODE"
 
       if [ "$EXISTS_CODE" = "200" ]; then
-        echo "== Library exists → REPLACE via PUT =="
+        echo "== Library exists → UPDATE via POST /libraries/{id}/archive =="
         RESP_FILE="$(mktemp)"
         HTTP_CODE=$(curl -s -S -o "$RESP_FILE" -w "%{http_code}" \
           -H "Authorization: Bearer $TOKEN" \
-          -X PUT "$BASE/libraries/archive?integrationInstance=${OIC_INSTANCE_ID}" \
+          -H "Accept: application/json" \
+          -X POST "$BASE/libraries/${LIB_ID_ENC}/archive?integrationInstance=${OIC_INSTANCE_ID}" \
           -F "file=@${LIB_FILE}" \
           -F "type=application/octet-stream" || true)
 
         if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-          echo "✅ Library replaced successfully — HTTP $HTTP_CODE"
+          echo "✅ Library updated OK — HTTP $HTTP_CODE"
         else
-          echo "❌ PUT failed — HTTP $HTTP_CODE"
+          echo "❌ Update failed — HTTP $HTTP_CODE"
           sed -n '1,200p' "$RESP_FILE" || true
           rm -f "$RESP_FILE"
           exit 1
@@ -59,18 +60,19 @@ steps:
         rm -f "$RESP_FILE"
 
       elif [ "$EXISTS_CODE" = "404" ]; then
-        echo "== Library not found → CREATE via POST =="
+        echo "== Library not found → CREATE via POST /libraries/archive =="
         RESP_FILE="$(mktemp)"
         HTTP_CODE=$(curl -s -S -o "$RESP_FILE" -w "%{http_code}" \
           -H "Authorization: Bearer $TOKEN" \
+          -H "Accept: application/json" \
           -X POST "$BASE/libraries/archive?integrationInstance=${OIC_INSTANCE_ID}" \
           -F "file=@${LIB_FILE}" \
           -F "type=application/octet-stream" || true)
 
         if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "204" ]; then
-          echo "🆕 Library created successfully — HTTP $HTTP_CODE"
+          echo "🆕 Library created OK — HTTP $HTTP_CODE"
         else
-          echo "❌ POST failed — HTTP $HTTP_CODE"
+          echo "❌ Create failed — HTTP $HTTP_CODE"
           sed -n '1,200p' "$RESP_FILE" || true
           rm -f "$RESP_FILE"
           exit 1
@@ -78,13 +80,8 @@ steps:
         rm -f "$RESP_FILE"
 
       else
-        echo "⚠️ Unexpected response code: $EXISTS_CODE — continuing as new library"
-        curl -f -s -S -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -F "file=@${LIB_FILE}" \
-          -F "type=application/octet-stream" \
-          "$BASE/libraries/archive?integrationInstance=${OIC_INSTANCE_ID}"
-        echo "🆕 Created library as fallback"
+        echo "❌ Unexpected code from GET /libraries/{id}: $EXISTS_CODE"
+        exit 1
       fi
 
-      echo "✅ Library upsert completed successfully"
+      echo "✅ Library upsert completed"
