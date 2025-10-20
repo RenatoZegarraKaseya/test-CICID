@@ -1,0 +1,62 @@
+version: 0.1
+component: build
+shell: bash
+
+steps:
+  - type: Command
+    name: "Activate OIC Project Integration (OAuth)"
+    timeoutInSeconds: 900
+    command: |
+      set -euo pipefail
+
+      # ===== Required params =====
+      : "${OIC_HOST:?Missing OIC_HOST}"                # e.g. https://design.integration.us-ashburn-1.ocp.oraclecloud.com
+      : "${OIC_INSTANCE_ID:?Missing OIC_INSTANCE_ID}"  # Service instance short name
+      : "${PROJ_ID:?Missing PROJ_ID}"                  # Project ID in OIC
+      : "${INT_CODE:?Missing INT_CODE}"                # Integration code (without version)
+      : "${INT_VERSION:?Missing INT_VERSION}"          # Integration version, e.g. 01.00.0000
+      : "${OAUTH_TOKEN_URL:?Missing OAUTH_TOKEN_URL}"
+      : "${OAUTH_CLIENT_ID:?Missing OAUTH_CLIENT_ID}"
+      : "${OAUTH_CLIENT_SECRET:?Missing OAUTH_CLIENT_SECRET}"
+      : "${OAUTH_SCOPE:=}"                             # optional
+
+      echo "== Params =="
+      echo "HOST=$OIC_HOST"
+      echo "INSTANCE=$OIC_INSTANCE_ID"
+      echo "PROJECT=$PROJ_ID"
+      echo "CODE=$INT_CODE"
+      echo "VERSION=$INT_VERSION"
+
+      BASE="$OIC_HOST/ic/api/integration/v1"
+      INT_ID_ENC="${INT_CODE}%7C${INT_VERSION}"   # code%7Cversion
+
+      # ===== OAuth2 token (client_credentials) =====
+      TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=$OAUTH_CLIENT_ID&client_secret=$OAUTH_CLIENT_SECRET&scope=$OAUTH_SCOPE" \
+        | grep -oP '"access_token"\s*:\s*"\K[^"]+')
+      [ -n "$TOKEN" ] || { echo "❌ Could not obtain access_token"; exit 1; }
+
+      # ===== Activate (POST + X-HTTP-Method-Override: PATCH) =====
+      echo "== Activating integration =="
+      RESP_PATCH="$(mktemp)"
+      HTTP_PATCH=$(curl -s -S -o "$RESP_PATCH" -w "%{http_code}" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json" \
+        -H "X-HTTP-Method-Override: PATCH" \
+        -X POST \
+        -d "{\"status\":\"ACTIVATED\"}" \
+        "$BASE/projects/${PROJ_ID}/integrations/${INT_ID_ENC}?integrationInstance=${OIC_INSTANCE_ID}" || true)
+
+      if [ "$HTTP_PATCH" = "200" ] || [ "$HTTP_PATCH" = "204" ]; then
+        echo "✅ Activated: ${INT_CODE}|${INT_VERSION} in project ${PROJ_ID}"
+        rm -f "$RESP_PATCH"
+        exit 0
+      fi
+
+      echo "❌ Activation failed — HTTP $HTTP_PATCH"
+      echo "Response:"
+      sed -n '1,200p' "$RESP_PATCH" || true
+      rm -f "$RESP_PATCH"
+      exit 1
