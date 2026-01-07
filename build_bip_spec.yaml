@@ -2,6 +2,12 @@ version: 0.1
 component: build
 shell: bash
 
+env:
+  vaultVariables:
+    BIP_HOST: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaan3siui2k5wbe3qpqpzwzus5wdyjb7rf2eiqrciismfsa"
+    BIP_USER: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaa5vfa4bhmghz2v5fbg2yo4shp4qyyilu6rnvqeqbbm7sa"
+    BIP_PASS: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaav4yqcn6lvzdafwx4247v2xptcxhcinvbjlt6y2u6omiq"
+
 steps:
   - type: Command
     name: "Upsert single BIP object (download→update|upload)"
