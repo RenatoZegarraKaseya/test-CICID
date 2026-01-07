@@ -22,6 +22,7 @@ steps:
       : "${BIP_OBJ_NAME:?Missing BIP_OBJ_NAME}"         # ej: testingPipelineDM
       : "${BIP_OBJ_PATH:?Missing BIP_OBJ_PATH}"         # ej: /Custom/KSY/DataModels/testingPipelineDM.xdm  (CON extensión para update)
 
+      echo ">> host '${BIP_HOST}"
       echo ">> Searching '${BIP_OBJ_NAME}' in ${BIP_REPO_ROOT} (.xdm/.xdmz/.xdo/.xdoz)"
       SRC="$(find "$BIP_REPO_ROOT" -type f \( -iname "${BIP_OBJ_NAME}.xdm" -o -iname "${BIP_OBJ_NAME}.xdmz" -o -iname "${BIP_OBJ_NAME}.xdo" -o -iname "${BIP_OBJ_NAME}.xdoz" \) | head -n1)"
       [ -n "$SRC" ] || { echo "❌ Source not found"; exit 1; }
