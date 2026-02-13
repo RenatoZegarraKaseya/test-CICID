@@ -31,9 +31,9 @@ steps:
 
       echo ">> Source: $SRC"
 
-      # ===== CONSTRUIR PATH DINÁMICO =====
-      RELATIVE_PATH="${SRC#$BIP_REPO_ROOT}"
-      BIP_OBJ_PATH="/${RELATIVE_PATH#*/}"
+      # ===== BUILD DYNAMIC PATH =====
+      RELATIVE_PATH="${SRC#$BIP_REPO_ROOT/}"
+      BIP_OBJ_PATH="/Custom/${RELATIVE_PATH}"
 
       echo ">> Calculated BIP path: ${BIP_OBJ_PATH}"
 
@@ -157,3 +157,4 @@ steps:
       fi
 
       echo "✅ Upsert completed"
+
