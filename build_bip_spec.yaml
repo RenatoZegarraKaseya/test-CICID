@@ -15,27 +15,35 @@ steps:
     command: |
       set -euo pipefail
 
-      : "${BIP_HOST:?Missing BIP_HOST}"                 # https://<pod>.fa.<region>.oraclecloud.com
+      # ===== ROOT FIJO =====
+      BIP_REPO_ROOT="SAAS/BIP"
+
+      : "${BIP_HOST:?Missing BIP_HOST}"
       : "${BIP_USER:?Missing BIP_USER}"
       : "${BIP_PASS:?Missing BIP_PASS}"
-      : "${BIP_REPO_ROOT:?Missing BIP_REPO_ROOT}"       # ej: SAAS/BIP
-      : "${BIP_OBJ_NAME:?Missing BIP_OBJ_NAME}"         # ej: testingPipelineDM
-      : "${BIP_OBJ_PATH:?Missing BIP_OBJ_PATH}"         # ej: /Custom/KSY/DataModels/testingPipelineDM.xdm  (CON extensión para update)
+      : "${BIP_OBJ_NAME:?Missing BIP_OBJ_NAME}"
 
-      echo ">> host '${BIP_HOST}"
+      echo ">> host '${BIP_HOST}'"
       echo ">> Searching '${BIP_OBJ_NAME}' in ${BIP_REPO_ROOT} (.xdm/.xdmz/.xdo/.xdoz)"
+
       SRC="$(find "$BIP_REPO_ROOT" -type f \( -iname "${BIP_OBJ_NAME}.xdm" -o -iname "${BIP_OBJ_NAME}.xdmz" -o -iname "${BIP_OBJ_NAME}.xdo" -o -iname "${BIP_OBJ_NAME}.xdoz" \) | head -n1)"
       [ -n "$SRC" ] || { echo "❌ Source not found"; exit 1; }
+
       echo ">> Source: $SRC"
+
+      # ===== CONSTRUIR PATH DINÁMICO =====
+      RELATIVE_PATH="${SRC#$BIP_REPO_ROOT}"
+      BIP_OBJ_PATH="/${RELATIVE_PATH#*/}"
+
+      echo ">> Calculated BIP path: ${BIP_OBJ_PATH}"
 
       lower="${SRC,,}"
       if [[ "$lower" == *.xdm || "$lower" == *.xdmz ]]; then
-        TYPE_RAW="xdm"   # para updateObject
+        TYPE_RAW="xdm"
       else
         TYPE_RAW="xdo"
       fi
 
-      # Normaliza a crudo (.xdm/.xdo) para updateObject
       normalize_to_raw() {
         local src="$1"
         case "${src,,}" in
@@ -66,8 +74,9 @@ steps:
 
       RAW_B64="$(base64 -w0 "$RAW_FILE" 2>/dev/null || base64 "$RAW_FILE" | tr -d '\n')"
 
-      # 1) Verificar existencia (downloadObject) usando path CON extensión
+      # ===== CHECK EXISTENCE =====
       echo ">> Checking existence (downloadObject) at: ${BIP_OBJ_PATH}"
+
       REQ_DL="$(mktemp)"
       printf '%s\n' \
         '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
@@ -86,7 +95,7 @@ steps:
         --data @"$REQ_DL" "$BIP_HOST/xmlpserver/services/v2/CatalogService" \
         -w "%{http_code}" -o "$RESP_DL" || true)
 
-      if [[ "$HTTP_CODE" == "200" ]] && ! grep -q "<soapenv:Fault" "$RESP_DL"; then
+      if [[ "$HTTP_CODE" == "200" ]] && ! grep -qi "<Fault" "$RESP_DL"; then
         EXISTS=1
         echo ">> Object exists → updateObject"
       else
@@ -95,7 +104,6 @@ steps:
       fi
 
       if [[ "$EXISTS" -eq 1 ]]; then
-        # ===== updateObject (requiere .xdm/.xdo crudo y path CON extensión) =====
         REQ_UPD="$(mktemp)"
         printf '%s\n' \
           '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v2="http://xmlns.oracle.com/oxp/service/v2">' \
@@ -115,17 +123,16 @@ steps:
 
         echo "✅ updateObject OK: ${BIP_OBJ_PATH}"
       else
-        # ===== uploadObject (requiere .xdmz/.xdoz, path SIN extensión, type xdmz/xdoz) =====
         case "${SRC,,}" in
           *.xdmz) OBJ_TYPE="xdmz" ;;
           *.xdoz) OBJ_TYPE="xdoz" ;;
           *)
-            echo "❌ Cannot create new object from raw ${TYPE_RAW}. Provide a .${TYPE_RAW}z (xdmz/xdoz) to use uploadObject."
+            echo "❌ Cannot create new object from raw ${TYPE_RAW}. Provide a .${TYPE_RAW}z"
             exit 1
             ;;
         esac
 
-        UPLOAD_PATH="${BIP_OBJ_PATH%.*}"  # quitar extensión para upload
+        UPLOAD_PATH="${BIP_OBJ_PATH%.*}"
         ZIP_B64="$(base64 -w0 "$SRC" 2>/dev/null || base64 "$SRC" | tr -d '\n')"
 
         REQ_UPL="$(mktemp)"
@@ -146,7 +153,7 @@ steps:
           -H "Content-Type: text/xml;charset=UTF-8" -H 'SOAPAction: ""' \
           --data @"$REQ_UPL" "$BIP_HOST/xmlpserver/services/v2/CatalogService" >/dev/null
 
-        echo "🆕 uploadObject OK: ${UPLOAD_PATH} (type=${OBJ_TYPE})"
+        echo "🆕 uploadObject OK: ${UPLOAD_PATH}"
       fi
 
       echo "✅ Upsert completed"
