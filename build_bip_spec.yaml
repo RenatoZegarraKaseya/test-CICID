@@ -4,9 +4,13 @@ shell: bash
 
 env:
   vaultVariables:
-    BIP_HOST: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaan3siui2k5wbe3qpqpzwzus5wdyjb7rf2eiqrciismfsa"
-    BIP_USER: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaa5vfa4bhmghz2v5fbg2yo4shp4qyyilu6rnvqeqbbm7sa"
-    BIP_PASS: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaav4yqcn6lvzdafwx4247v2xptcxhcinvbjlt6y2u6omiq"
+    DEV1_BIP_HOST: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaan3siui2k5wbe3qpqpzwzus5wdyjb7rf2eiqrciismfsa"
+    DEV1_BIP_USER: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaa5vfa4bhmghz2v5fbg2yo4shp4qyyilu6rnvqeqbbm7sa"
+    DEV1_BIP_PASS: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaav4yqcn6lvzdafwx4247v2xptcxhcinvbjlt6y2u6omiq"
+
+    DEV4_BIP_HOST: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaaesfubiqprfrekobfdrq4gszatjmzyvw45k3cmxkl2bfq"
+    DEV4_BIP_USER: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaasjalimwbyc6f2iy2ayu3vjk2m4k6264iykkla6am7j7q"
+    DEV4_BIP_PASS: "ocid1.vaultsecret.oc1.iad.amaaaaaapdy3zdaar2iz6eiddaso7tjzvlsbppdye4v6rop2omyfxegoiq3q"
 
 steps:
   - type: Command
@@ -15,7 +19,36 @@ steps:
     command: |
       set -euo pipefail
 
-      # ===== ROOT FIJO =====
+      : "${ENVIRONMENT:?Missing ENVIRONMENT}"
+
+      ENVIRONMENT_UPPER="${ENVIRONMENT^^}"
+
+      case "$ENVIRONMENT_UPPER" in
+        DEV1)
+          BIP_HOST="${DEV1_BIP_HOST}"
+          BIP_USER="${DEV1_BIP_USER}"
+          BIP_PASS="${DEV1_BIP_PASS}"
+          ;;
+        DEV4)
+          BIP_HOST="${DEV4_BIP_HOST}"
+          BIP_USER="${DEV4_BIP_USER}"
+          BIP_PASS="${DEV4_BIP_PASS}"
+          ;;
+        PROD)
+          BIP_HOST="${PROD_BIP_HOST}"
+          BIP_USER="${PROD_BIP_USER}"
+          BIP_PASS="${PROD_BIP_PASS}"
+          ;;
+        *)
+          echo "❌ Invalid ENVIRONMENT value: $ENVIRONMENT"
+          exit 1
+          ;;
+      esac
+
+      echo ">> Deploying to environment: $ENVIRONMENT_UPPER"
+      echo ">> Using host: $BIP_HOST"
+
+      # ===== ROOT PATH =====
       BIP_REPO_ROOT="SAAS/BIP"
 
       : "${BIP_HOST:?Missing BIP_HOST}"
@@ -157,4 +190,3 @@ steps:
       fi
 
       echo "✅ Upsert completed"
-
